@@ -223,6 +223,33 @@ function pairChoices(it) {
   return shuffle([it.keigo].concat(out));
 }
 
+/* ---------- session persistence ---------- */
+// The queue (incl. items to retry) is persisted so leaving mid-round never loses the pending cards.
+const SESSION_KEY = KEY + '.session';
+function saveSession() {
+  if (!session || session.practice) return;
+  try {
+    if (session.queue.length) localStorage.setItem(SESSION_KEY, JSON.stringify({ queue: session.queue, total: session.total, done: session.done, stats: session.stats }));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch (e) {}
+}
+function pendingSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY));
+    if (!s || !Array.isArray(s.queue)) return null;
+    const m = byKey();
+    s.queue = s.queue.filter(e => m[e.key]);
+    return s.queue.length ? s : null;
+  } catch (e) { return null; }
+}
+function resumeSession() {
+  const s = pendingSession();
+  if (!s) { screen = 'home'; return render(); }
+  session = { queue: s.queue, total: s.total, done: s.done || 0, stats: s.stats || { right: 0, wrong: 0 }, step: null, practice: null };
+  screen = 'session';
+  render();
+}
+
 /* ---------- session ---------- */
 function startSession() {
   const now = Date.now();
@@ -231,6 +258,7 @@ function startSession() {
   const queue = due.concat(fresh);
   if (!queue.length) return;
   session = { queue, total: queue.length, done: 0, stats: { right: 0, wrong: 0 }, step: null, practice: null };
+  saveSession();
   screen = 'session';
   render();
 }
@@ -267,6 +295,7 @@ function finishEntry(correct) {
   if (!correct) session.queue.push({ key: entry.key, retry: true });
   else session.done++;
   session.step = null;
+  saveSession();
   if (!session.queue.length) screen = 'complete';
   render();
 }
@@ -312,7 +341,9 @@ function viewHome() {
   html += '<div class="stats"><div class="stat"><b>' + due + '</b><span>Due reviews</span></div>' +
     '<div class="stat"><b>' + fresh + '</b><span>New today</span></div>' +
     '<div class="stat"><b>' + mastered + '</b><span>Mastered</span></div></div>';
-  html += '<button class="primary" data-act="start"' + (due + fresh ? '' : ' disabled') + '>' + (due + fresh ? 'Start (' + (due + fresh) + ')' : 'Nothing to do right now') + '</button>';
+  const pend = pendingSession();
+  if (pend) html += '<button class="primary" data-act="resume">Resume session (' + pend.queue.length + ' left)</button>';
+  html += '<button' + (pend ? '' : ' class="primary"') + ' data-act="start"' + (due + fresh ? '' : ' disabled') + '>' + (due + fresh ? 'Start (' + (due + fresh) + ')' : 'Nothing to do right now') + '</button>';
   if (!due && !fresh) {
     if (upcoming) html += '<p class="small center">Next review in ' + fmtWait(upcoming - now) + '</p>';
     else if (!pool.length) html += '<p class="small center">No new items left. Add more!</p>';
@@ -494,11 +525,12 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
-  if (act === 'start') return startSession();
+  if (act === 'start') { try { localStorage.removeItem(SESSION_KEY); } catch (e) {} return startSession(); }
+  if (act === 'resume') return resumeSession();
   if (act === 'practice') return startPractice(el.dataset.mode);
   if (act === 'go') { screen = el.dataset.to; return render(); }
   if (act === 'home') { screen = 'home'; session = null; return render(); }
-  if (act === 'quit') { if (!session || confirm('End this session? Answered items are already saved.')) { screen = 'home'; session = null; render(); } return; }
+  if (act === 'quit') { if (!session || confirm('Leave this session? You can resume it from the home screen.')) { screen = 'home'; session = null; render(); } return; }
   if (act === 'reveal') {
     const t = document.getElementById('typed');
     if (t) session.step.typed = t.value;
@@ -537,7 +569,7 @@ document.addEventListener('click', e => {
   }
   if (act === 'reset') {
     if (confirm('Erase ALL progress? This cannot be undone.') && confirm('Really erase everything?')) {
-      state.progress = {}; state.stats = {}; state.intro = { date: '', count: 0 }; save(); notice = { kind: 'ok', text: 'Progress reset.' }; render();
+      state.progress = {}; try { localStorage.removeItem(SESSION_KEY); } catch (e) {} state.stats = {}; state.intro = { date: '', count: 0 }; save(); notice = { kind: 'ok', text: 'Progress reset.' }; render();
     }
     return;
   }
