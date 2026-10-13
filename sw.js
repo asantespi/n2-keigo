@@ -10,6 +10,7 @@ self.addEventListener('activate', e => {
 });
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  if (new URL(e.request.url).origin !== location.origin) return; // never cache the sync API
   e.respondWith(
     fetch(e.request).then(res => {
       const copy = res.clone();
