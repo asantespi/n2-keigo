@@ -132,9 +132,10 @@ let screen = 'home';
 let session = null;   // {queue, total, done, stats, step, practice}
 let notice = null;
 let browseFilter = '';
+let editingKey = null, browseScroll = 0;
 
 function today() { return new Date().toLocaleDateString('en-CA'); }
-function baseState() { return { progress: {}, extra: [], settings: { dailyNew: 8, examDate: DEFAULT_EXAM }, intro: { date: '', count: 0 }, stats: {} }; }
+function baseState() { return { progress: {}, extra: [], edits: {}, settings: { dailyNew: 8, examDate: DEFAULT_EXAM }, intro: { date: '', count: 0 }, stats: {} }; }
 function load() {
   const base = baseState();
   try {
@@ -152,7 +153,7 @@ function allItems() {
     const k = String(it.id);
     if (seen.has(k)) return;
     seen.add(k);
-    out.push(Object.assign({}, it, { key: k, order: out.length }));
+    out.push(Object.assign({}, it, (state.edits || {})[k] || {}, { key: k, order: out.length }));
   });
   return out;
 }
@@ -480,16 +481,46 @@ function viewBrowse() {
   if (pairs.length) {
     html += '<h2>Verb forms</h2>';
     pairs.forEach(i => {
-      html += '<div class="list-item"><div><div class="p">' + esc(i.keigo) + ' <span class="kind">' + esc(KIND_SHORT[i.kind]) + '</span></div><div class="m">' + esc(i.verb) + ' · ' + esc(i.meaning) + '</div></div>' + levelLabel(i) + '</div>';
+      html += '<div class="list-item" data-act="edit" data-key="' + esc(i.key) + '" style="cursor:pointer"><div><div class="p">' + esc(i.keigo) + ' <span class="kind">' + esc(KIND_SHORT[i.kind]) + '</span></div><div class="m">' + esc(i.verb) + ' · ' + esc(i.meaning) + '</div></div>' + editSide(i) + '</div>';
     });
   }
   if (quizzes.length) {
     html += '<h2>Questions</h2>';
     quizzes.forEach(i => {
-      html += '<div class="list-item"><div><div class="p">' + esc(i.mode === 'error' ? i.sentence : i.sentence.replace('＿＿', '（' + i.answer + '）')) + '</div><div class="m">' + esc(MODE_NAME[i.mode]) + '</div></div>' + levelLabel(i) + '</div>';
+      html += '<div class="list-item" data-act="edit" data-key="' + esc(i.key) + '" style="cursor:pointer"><div><div class="p">' + esc(i.mode === 'error' ? i.sentence : i.sentence.replace('＿＿', '（' + i.answer + '）')) + '</div><div class="m">' + esc(MODE_NAME[i.mode]) + '</div></div>' + editSide(i) + '</div>';
     });
   }
   if (!items.length) html += '<p class="small">No matches.</p>';
+  return html;
+}
+
+function editSide(it) { return '<div style="text-align:right">' + levelLabel(it) + '<div class="lv">✎ Edit</div></div>'; }
+// [field, label, kind]: kind = 'area' (textarea), 'kind' (S/K/T select), 'list' (array, one per line), default one-line input
+const EDIT_FIELDS = {
+  pair: [['verb', 'Verb (plain form)'], ['meaning', 'Meaning'], ['kind', 'Kind', 'kind'], ['keigo', 'Keigo form'], ['reading', 'Reading'],
+    ['notes', 'Notes', 'area'], ['sentence', 'Sentence', 'area'], ['translation', 'Translation', 'area']],
+  quiz: [['situation', 'Situation', 'area'], ['sentence', 'Sentence (＿＿ marks the blank)', 'area'], ['answer', 'Correct answer'],
+    ['wrong', 'Wrong choices (one per line)', 'list'], ['why', 'Why', 'area']],
+};
+const EDIT_REQUIRED = { pair: ['verb', 'meaning', 'keigo'], quiz: ['sentence', 'answer'] };
+function viewEdit() {
+  const it = byKey()[editingKey];
+  if (!it) { screen = 'browse'; return viewBrowse(); }
+  const original = (window.SEED_KEIGO || []).some(x => String(x.id) === editingKey);
+  let html = '<div class="topbar"><button class="back" data-act="edit-cancel">←</button><h1 style="margin:0">Edit card</h1></div>' +
+    '<p class="sub">Progress is kept. Changes are saved on this device and synced to the cloud.</p>';
+  if (notice) { html += '<div class="msg ' + notice.kind + '">' + esc(notice.text) + '</div>'; notice = null; }
+  html += '<div class="card">';
+  EDIT_FIELDS[it.type].forEach(f => {
+    const id = 'ed-' + f[0], v = it[f[0]];
+    html += '<div class="label">' + f[1] + '</div>';
+    html += f[2] === 'kind' ? '<select id="' + id + '">' + Object.keys(KIND_SHORT).map(k => '<option value="' + k + '"' + (it.kind === k ? ' selected' : '') + '>' + esc(KIND_NAME[k]) + '</option>').join('') + '</select>'
+      : f[2] === 'list' ? '<textarea id="' + id + '" style="min-height:64px">' + esc((v || []).join('\n')) + '</textarea>'
+      : f[2] === 'area' ? '<textarea id="' + id + '" style="min-height:64px">' + esc(v || '') + '</textarea>'
+      : '<input type="text" id="' + id + '" value="' + esc(v || '') + '">';
+  });
+  html += '</div><button class="primary" data-act="edit-save">Save changes</button>';
+  if (state.edits && state.edits[editingKey]) html += '<button data-act="edit-revert">' + (original ? 'Revert to original' : 'Discard edits') + '</button>';
   return html;
 }
 
@@ -517,8 +548,8 @@ function viewSettings() {
 
 function render() {
   const app = document.getElementById('app');
-  app.innerHTML = { home: viewHome, session: viewSession, complete: viewComplete, practice: viewPractice, progress: viewProgress, browse: viewBrowse, add: viewAdd, settings: viewSettings }[screen]();
-  window.scrollTo(0, 0);
+  app.innerHTML = { home: viewHome, session: viewSession, complete: viewComplete, practice: viewPractice, progress: viewProgress, browse: viewBrowse, edit: viewEdit, add: viewAdd, settings: viewSettings }[screen]();
+  window.scrollTo(0, screen === 'browse' ? browseScroll : 0);
 }
 
 /* ---------- events ---------- */
@@ -529,7 +560,25 @@ document.addEventListener('click', e => {
   if (act === 'start') { try { localStorage.removeItem(SESSION_KEY); } catch (e) {} return startSession(); }
   if (act === 'resume') return resumeSession();
   if (act === 'practice') return startPractice(el.dataset.mode);
-  if (act === 'go') { screen = el.dataset.to; return render(); }
+  if (act === 'edit') { browseScroll = window.scrollY; editingKey = el.dataset.key; screen = 'edit'; return render(); }
+  if (act === 'edit-cancel') { screen = 'browse'; return render(); }
+  if (act === 'edit-save') {
+    const it = byKey()[editingKey], v = {};
+    EDIT_FIELDS[it.type].forEach(f => {
+      const raw = document.getElementById('ed-' + f[0]).value.trim();
+      v[f[0]] = f[2] === 'list' ? raw.split('\n').map(x => x.trim()).filter(Boolean) : raw;
+    });
+    const missing = EDIT_REQUIRED[it.type].some(f => !v[f]) || (it.type === 'quiz' && !v.wrong.length);
+    if (missing) { notice = { kind: 'err', text: it.type === 'pair' ? 'Verb, Meaning and Keigo form are required.' : 'Sentence, Correct answer and at least one wrong choice are required.' }; return render(); }
+    state.edits = state.edits || {};
+    state.edits[editingKey] = v; save();
+    notice = null; screen = 'browse'; return render();
+  }
+  if (act === 'edit-revert') {
+    if (!confirm('Discard your edits to this card?')) return;
+    delete state.edits[editingKey]; save(); screen = 'browse'; return render();
+  }
+  if (act === 'go') { if (el.dataset.to === 'browse') browseScroll = 0; screen = el.dataset.to; return render(); }
   if (act === 'home') { screen = 'home'; session = null; return render(); }
   if (act === 'quit') { if (!session || confirm('Leave this session? You can resume it from the home screen.')) { screen = 'home'; session = null; render(); } return; }
   if (act === 'reveal') {
@@ -589,7 +638,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'filter') {
-    browseFilter = e.target.value;
+    browseFilter = e.target.value; browseScroll = 0;
     const pos = e.target.selectionStart;
     render();
     const f = document.getElementById('filter'); f.focus(); f.setSelectionRange(pos, pos);
